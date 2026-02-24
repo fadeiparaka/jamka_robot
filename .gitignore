@@ -1,0 +1,32 @@
+# виртуальное окружение
+.venv/
+venv/
+
+# Python-артефакты
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# среды/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# логи
+*.log
+
+# База данных и локальные файлы
+bot.db
+*.sqlite3
+
+# конфигурация окружения
+.env
+
+# системные файлы
+.DS_Store
+Thumbs.db
