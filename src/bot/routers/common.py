@@ -6,6 +6,7 @@ import logging
 from db.users import add_user_from_message
 from bot import texts
 from config import TASKS_CHANNEL_ID
+from db.tasks import get_last_task
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,22 @@ router = Router(name="common")
 async def cmd_start(message: Message):
     await add_user_from_message(message)
     await message.answer(texts.WELCOME_TEXT)
+    last_task = await get_last_task()
+    if last_task:
+        task_chat_id, task_msg_id = last_task
+        try:
+            result = await message.bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=task_chat_id,
+                message_id=task_msg_id,
+            )
+            await message.bot.pin_chat_message(
+                chat_id=message.chat.id,
+                message_id=result.message_id,
+                disable_notification=True,
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить/закрепить задание при /start: %s", e)
 
 
 @router.message(Command("help"))
@@ -24,7 +41,7 @@ async def cmd_help(message: Message):
     await message.answer(texts.HELP_TEXT)
 
 
-@router.message(~F.text.startswith("/"))
+@router.message(~F.text.startswith("/"), F.content_type == "text")
 async def handle_task_answer(message: Message):
     if not message.reply_to_message:
         await message.answer(texts.NO_REPLY_TEXT)

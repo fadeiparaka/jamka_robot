@@ -8,6 +8,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from config import ADMIN_IDS
 from db.users import get_all_chat_ids, delete_user_by_chat_id
+from db.tasks import save_last_task
 from bot.texts import (
     POST_ONLY_REPLY_TEXT,
     POST_STARTED_TEXT,
@@ -77,6 +78,10 @@ async def cmd_post(message: Message):
         except Exception as e:
             logger.warning("Failed to send to %s: %s", chat_id, e)
             continue
+
+    if do_pin and sent > 0:
+        await save_last_task(src_msg.chat.id, src_msg.message_id)
+        logger.info("Saved last task: chat_id=%s msg_id=%s", src_msg.chat.id, src_msg.message_id)
 
     await loading_msg.delete()
     await message.answer(
