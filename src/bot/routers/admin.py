@@ -23,6 +23,19 @@ from bot.texts import (
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
 
+# Буфер последнего альбома от админа: media_group_id -> [message_id, ...]
+_admin_album_buffer: dict[str, list[int]] = {}
+
+
+@router.message(F.media_group_id, F.from_user.id.in_(ADMIN_IDS))
+async def handle_admin_album(message: Message):
+    """Накапливаем message_id альбома от админа в буфер."""
+    group_id = message.media_group_id
+    if group_id not in _admin_album_buffer:
+        _admin_album_buffer[group_id] = []
+    _admin_album_buffer[group_id].append(message.message_id)
+    logger.info("Buffered admin album %s: msg_id=%s", group_id, message.message_id)
+
 
 @router.message(Command("post"), F.from_user.id.in_(ADMIN_IDS))
 async def cmd_post(message: Message):
@@ -38,26 +51,45 @@ async def cmd_post(message: Message):
     src_msg = message.reply_to_message
     loading_msg = await message.answer(POST_STARTED_TEXT)
 
+    # Определяем: одиночное сообщение или альбом
+    group_id = src_msg.media_group_id
+    if group_id and group_id in _admin_album_buffer:
+        message_ids = sorted(_admin_album_buffer.pop(group_id))
+        is_album = True
+    else:
+        message_ids = [src_msg.message_id]
+        is_album = False
+
     chat_ids = await get_all_chat_ids()
-    logger.info("Broadcast to %s chats, pin=%s", len(chat_ids), do_pin)
+    logger.info("Broadcast to %s chats, album=%s, pin=%s", len(chat_ids), is_album, do_pin)
 
     sent = 0
     removed = 0
 
     for chat_id in chat_ids:
         try:
-            result = await message.bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=src_msg.chat.id,
-                message_id=src_msg.message_id,
-            )
+            if is_album:
+                results = await message.bot.copy_messages(
+                    chat_id=chat_id,
+                    from_chat_id=src_msg.chat.id,
+                    message_ids=message_ids,
+                )
+                copied_msg_id = results[0].message_id
+            else:
+                result = await message.bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=src_msg.chat.id,
+                    message_id=src_msg.message_id,
+                )
+                copied_msg_id = result.message_id
+
             sent += 1
 
             if do_pin:
                 try:
                     await message.bot.pin_chat_message(
                         chat_id=chat_id,
-                        message_id=result.message_id,
+                        message_id=copied_msg_id,
                         disable_notification=False,
                     )
                 except Exception as pin_err:
@@ -80,8 +112,9 @@ async def cmd_post(message: Message):
             continue
 
     if do_pin and sent > 0:
-        await save_last_task(src_msg.chat.id, src_msg.message_id)
-        logger.info("Saved last task: chat_id=%s msg_id=%s", src_msg.chat.id, src_msg.message_id)
+        await save_last_task(src_msg.chat.id, message_ids)
+        logger.info("Saved last task: chat_id=%s msg_ids=%s", src_msg.chat.id, message_ids)
+
 
     await loading_msg.delete()
     await message.answer(

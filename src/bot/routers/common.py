@@ -1,38 +1,57 @@
+import asyncio
+import logging
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
-import logging
 
 from db.users import add_user_from_message
+from db.tasks import get_last_task
 from bot import texts
 from config import TASKS_CHANNEL_ID
-from db.tasks import get_last_task
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="common")
+
+# Буфер для медиагрупп: media_group_id -> список сообщений
+_media_buffer: dict[str, list[Message]] = {}
+# Флаг запущенного таймера для группы
+_media_timers: set[str] = set()
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await add_user_from_message(message)
     await message.answer(texts.WELCOME_TEXT)
+
     last_task = await get_last_task()
     if last_task:
-        task_chat_id, task_msg_id = last_task
+        task_chat_id, task_msg_ids = last_task
         try:
-            result = await message.bot.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=task_chat_id,
-                message_id=task_msg_id,
-            )
+            if len(task_msg_ids) == 1:
+                result = await message.bot.copy_message(
+                    chat_id=message.chat.id,
+                    from_chat_id=task_chat_id,
+                    message_id=task_msg_ids[0],
+                )
+                pin_msg_id = result.message_id
+            else:
+                results = await message.bot.copy_messages(
+                    chat_id=message.chat.id,
+                    from_chat_id=task_chat_id,
+                    message_ids=task_msg_ids,
+                )
+                pin_msg_id = results[0].message_id
+
             await message.bot.pin_chat_message(
                 chat_id=message.chat.id,
-                message_id=result.message_id,
+                message_id=pin_msg_id,
                 disable_notification=True,
             )
         except Exception as e:
             logger.warning("Не удалось отправить/закрепить задание при /start: %s", e)
+
 
 
 @router.message(Command("help"))
@@ -48,7 +67,6 @@ async def handle_task_answer(message: Message):
         return
 
     src = message.reply_to_message
-
     if not src.from_user or not src.from_user.is_bot:
         return
 
@@ -66,6 +84,107 @@ async def handle_task_answer(message: Message):
         await message.answer(texts.CHANNEL_NOT_CONFIGURED_TEXT)
         return
 
+    await _forward_and_tag(message, task_title)
+
+
+@router.message(F.media_group_id, ~F.text.startswith("/"))
+async def handle_media_group(message: Message):
+    if not message.reply_to_message:
+        # Одиночное медиа без reply — не альбом в контексте задания
+        if not message.media_group_id:
+            await message.answer(texts.NO_REPLY_TEXT)
+        return
+
+    src = message.reply_to_message
+    if not src.from_user or not src.from_user.is_bot:
+        return
+
+    src_text = src.text or src.caption
+    if not src_text:
+        await message.answer(texts.NO_TITLE_TEXT)
+        return
+
+    task_title = extract_task_title(src_text)
+    if not task_title:
+        await message.answer(texts.NO_TITLE_TEXT)
+        return
+
+    if not TASKS_CHANNEL_ID:
+        await message.answer(texts.CHANNEL_NOT_CONFIGURED_TEXT)
+        return
+
+    group_id = message.media_group_id
+
+    # Добавляем сообщение в буфер
+    if group_id not in _media_buffer:
+        _media_buffer[group_id] = []
+    _media_buffer[group_id].append(message)
+
+    # Запускаем таймер только один раз на группу
+    if group_id in _media_timers:
+        return
+    _media_timers.add(group_id)
+
+    await asyncio.sleep(0.7)
+
+    messages = _media_buffer.pop(group_id, [])
+    _media_timers.discard(group_id)
+
+    if not messages:
+        return
+
+    # Сортируем по message_id чтобы порядок был правильный
+    messages.sort(key=lambda m: m.message_id)
+    message_ids = [m.message_id for m in messages]
+
+    try:
+        await message.bot.copy_messages(
+            chat_id=TASKS_CHANNEL_ID,
+            from_chat_id=message.chat.id,
+            message_ids=message_ids,
+        )
+    except Exception as e:
+        logger.exception("Не удалось переслать альбом в канал: %s", e)
+        await messages[0].answer(texts.FORWARD_ERROR_TEXT)
+        return
+
+    author_tag = _get_author_tag(message)
+    await message.bot.send_message(
+        chat_id=TASKS_CHANNEL_ID,
+        text=f"{task_title}\n\n{author_tag}",
+    )
+
+    await messages[0].answer(texts.TASK_ACCEPTED_TEXT)
+
+
+@router.message(~F.media_group_id, ~F.text.startswith("/"), F.content_type.in_({"photo", "video", "document", "audio", "voice", "video_note"}))
+async def handle_single_media(message: Message):
+    if not message.reply_to_message:
+        await message.answer(texts.NO_REPLY_TEXT)
+        return
+
+    src = message.reply_to_message
+    if not src.from_user or not src.from_user.is_bot:
+        return
+
+    src_text = src.text or src.caption
+    if not src_text:
+        await message.answer(texts.NO_TITLE_TEXT)
+        return
+
+    task_title = extract_task_title(src_text)
+    if not task_title:
+        await message.answer(texts.NO_TITLE_TEXT)
+        return
+
+    if not TASKS_CHANNEL_ID:
+        await message.answer(texts.CHANNEL_NOT_CONFIGURED_TEXT)
+        return
+
+    await _forward_and_tag(message, task_title)
+
+
+async def _forward_and_tag(message: Message, task_title: str):
     try:
         await message.bot.copy_message(
             chat_id=TASKS_CHANNEL_ID,
@@ -77,21 +196,21 @@ async def handle_task_answer(message: Message):
         await message.answer(texts.FORWARD_ERROR_TEXT)
         return
 
-    username = message.from_user.username
-    if username:
-        author_tag = f"@{username}"
-    else:
-        full_name = " ".join(
-            filter(None, [message.from_user.first_name, message.from_user.last_name])
-        ) or "Без имени"
-        author_tag = f"{full_name} (id: {message.from_user.id})"
-
+    author_tag = _get_author_tag(message)
     await message.bot.send_message(
         chat_id=TASKS_CHANNEL_ID,
         text=f"{task_title}\n\n{author_tag}",
     )
-
     await message.answer(texts.TASK_ACCEPTED_TEXT)
+
+
+def _get_author_tag(message: Message) -> str:
+    if message.from_user.username:
+        return f"@{message.from_user.username}"
+    full_name = " ".join(
+        filter(None, [message.from_user.first_name, message.from_user.last_name])
+    ) or "Без имени"
+    return f"{full_name} (id: {message.from_user.id})"
 
 
 def extract_task_title(text: str) -> str | None:
