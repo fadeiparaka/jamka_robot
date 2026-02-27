@@ -4,7 +4,7 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
 from config import ADMIN_IDS
 from db.users import get_all_chat_ids, delete_user_by_chat_id
@@ -67,49 +67,60 @@ async def cmd_post(message: Message):
     removed = 0
 
     for chat_id in chat_ids:
-        try:
-            if is_album:
-                results = await message.bot.copy_messages(
-                    chat_id=chat_id,
-                    from_chat_id=src_msg.chat.id,
-                    message_ids=message_ids,
-                )
-                copied_msg_id = results[0].message_id
-            else:
-                result = await message.bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=src_msg.chat.id,
-                    message_id=src_msg.message_id,
-                )
-                copied_msg_id = result.message_id
-
-            sent += 1
-
-            if do_pin:
-                try:
-                    await message.bot.pin_chat_message(
+        retries = 3
+        while retries > 0:
+            try:
+                if is_album:
+                    results = await message.bot.copy_messages(
                         chat_id=chat_id,
-                        message_id=copied_msg_id,
-                        disable_notification=False,
+                        from_chat_id=src_msg.chat.id,
+                        message_ids=message_ids,
                     )
-                except Exception as pin_err:
-                    logger.warning("Pin failed for chat_id=%s: %s", chat_id, pin_err)
+                    copied_msg_id = results[0].message_id
+                else:
+                    result = await message.bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=src_msg.chat.id,
+                        message_id=src_msg.message_id,
+                    )
+                    copied_msg_id = result.message_id
 
-            await asyncio.sleep(0.05)
+                sent += 1
 
-        except TelegramForbiddenError:
-            await delete_user_by_chat_id(chat_id)
-            removed += 1
-            logger.info("Removed blocked user chat_id=%s", chat_id)
+                if do_pin:
+                    try:
+                        await message.bot.pin_chat_message(
+                            chat_id=chat_id,
+                            message_id=copied_msg_id,
+                            disable_notification=False,
+                        )
+                    except Exception as pin_err:
+                        logger.warning("Pin failed for chat_id=%s: %s", chat_id, pin_err)
 
-        except TelegramBadRequest:
-            await delete_user_by_chat_id(chat_id)
-            removed += 1
-            logger.info("Removed invalid chat_id=%s", chat_id)
+                await asyncio.sleep(0.05)
+                break  # успешно — выходим из while
 
-        except Exception as e:
-            logger.warning("Failed to send to %s: %s", chat_id, e)
-            continue
+            except TelegramRetryAfter as e:
+                logger.warning("Rate limit, sleeping %s sec", e.retry_after)
+                await asyncio.sleep(e.retry_after)
+                retries -= 1  # попробуем ещё раз
+
+            except TelegramForbiddenError:
+                await delete_user_by_chat_id(chat_id)
+                removed += 1
+                logger.info("Removed blocked user chat_id=%s", chat_id)
+                break
+
+            except TelegramBadRequest:
+                await delete_user_by_chat_id(chat_id)
+                removed += 1
+                logger.info("Removed invalid chat_id=%s", chat_id)
+                break
+
+            except Exception as e:
+                logger.warning("Failed to send to %s: %s", chat_id, e)
+                break
+
 
     if do_pin and sent > 0:
         await save_last_task(src_msg.chat.id, message_ids)
