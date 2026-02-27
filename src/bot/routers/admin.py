@@ -3,8 +3,22 @@ import logging
 
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+import math
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
+
+
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from db.archive import get_all_weeks, create_week, add_archive_task
+from bot.texts import (
+    ARCHIVE_CHOOSE_WEEK_TEXT,
+    ARCHIVE_NEW_WEEK_PROMPT_TEXT,
+    ARCHIVE_SAVED_TEXT,
+    ARCHIVE_SKIPPED_TEXT,
+)
 
 from config import ADMIN_IDS
 from db.users import get_all_chat_ids, delete_user_by_chat_id
@@ -19,26 +33,30 @@ from bot.texts import (
     PIN_DONE_TEXT,
     PIN_NO_RIGHTS_TEXT,
 )
+class ArchiveFSM(StatesGroup):
+    choosing_week = State()
+    entering_week_name = State()
+
 
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
 
 # Буфер последнего альбома от админа: media_group_id -> [message_id, ...]
-_admin_album_buffer: dict[str, list[int]] = {}
+_admin_album_buffer: dict[str, list[Message]] = {}
 
 
-@router.message(F.media_group_id, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.media_group_id, F.from_user.id.in_(ADMIN_IDS), ~F.reply_to_message)
 async def handle_admin_album(message: Message):
-    """Накапливаем message_id альбома от админа в буфер."""
     group_id = message.media_group_id
     if group_id not in _admin_album_buffer:
         _admin_album_buffer[group_id] = []
-    _admin_album_buffer[group_id].append(message.message_id)
+    _admin_album_buffer[group_id].append(message)
     logger.info("Buffered admin album %s: msg_id=%s", group_id, message.message_id)
 
 
+
 @router.message(Command("post"), F.from_user.id.in_(ADMIN_IDS))
-async def cmd_post(message: Message):
+async def cmd_post(message: Message, state: FSMContext):
     logger.info("CMD /post from admin id=%s", message.from_user.id)
 
     if not message.reply_to_message:
@@ -53,12 +71,24 @@ async def cmd_post(message: Message):
 
     # Определяем: одиночное сообщение или альбом
     group_id = src_msg.media_group_id
+    if group_id:
+        # Ждём пока все части альбома придут от Telegram
+        await asyncio.sleep(0.7)
+
     if group_id and group_id in _admin_album_buffer:
-        message_ids = sorted(_admin_album_buffer.pop(group_id))
+        album_messages = sorted(_admin_album_buffer.pop(group_id), key=lambda m: m.message_id)
+        message_ids = [m.message_id for m in album_messages]
+        album_caption = next(
+            (m.caption for m in album_messages if m.caption),
+            None
+        )
         is_album = True
     else:
+        album_messages = None
+        album_caption = None
         message_ids = [src_msg.message_id]
         is_album = False
+
 
     chat_ids = await get_all_chat_ids()
     logger.info("Broadcast to %s chats, album=%s, pin=%s", len(chat_ids), is_album, do_pin)
@@ -126,11 +156,25 @@ async def cmd_post(message: Message):
         await save_last_task(src_msg.chat.id, message_ids)
         logger.info("Saved last task: chat_id=%s msg_ids=%s", src_msg.chat.id, message_ids)
 
+        # Извлекаем заголовок задания
+        raw_text = src_msg.text or src_msg.caption or album_caption or ""
+        title = (raw_text.split(".", 1)[0].strip() + ".") if raw_text else "Без названия."
 
-    await loading_msg.delete()
-    await message.answer(
-        f"{POST_DONE_TEXT} Отправлено: {sent}. Удалено из БД: {removed}."
-    )
+
+        weeks = await get_all_weeks()
+        kb = _choose_week_keyboard(weeks, page=0)
+        await message.answer(ARCHIVE_CHOOSE_WEEK_TEXT, reply_markup=kb.as_markup())
+
+        # Сохраняем данные задания в FSM
+        await state.set_state(ArchiveFSM.choosing_week)
+        await state.update_data(
+            arc_chat_id=src_msg.chat.id,
+            arc_message_ids=message_ids,
+            arc_is_album=is_album,
+            arc_title=title,
+            arc_page=0,
+        )
+
 
 
 @router.message(Command("post"))
@@ -170,3 +214,94 @@ async def cmd_pin(message: Message):
 @router.message(Command("pin"))
 async def not_admin_pin(message: Message):
     await message.answer(NOT_ADMIN_TEXT)
+
+def _choose_week_keyboard(weeks: list[dict], page: int) -> InlineKeyboardBuilder:
+    WEEKS_PER_PAGE = 8
+    total_pages = max(1, math.ceil(len(weeks) / WEEKS_PER_PAGE))
+    start = page * WEEKS_PER_PAGE
+    page_weeks = weeks[start: start + WEEKS_PER_PAGE]
+
+    builder = InlineKeyboardBuilder()
+
+    for i, w in enumerate(page_weeks):
+        global_num = start + i + 1
+        builder.row(InlineKeyboardButton(
+            text=f"Неделя {global_num}: {w['title']}",
+            callback_data=f"aw_week:{w['id']}",
+        ))
+
+    builder.row(InlineKeyboardButton(text="➕ Новая неделя", callback_data="aw_new"))
+    builder.row(InlineKeyboardButton(text="Пропустить", callback_data="aw_skip"))
+
+    if total_pages > 1:
+        prev_page = (page - 1) % total_pages
+        next_page = (page + 1) % total_pages
+        builder.row(
+            InlineKeyboardButton(text="<<|", callback_data=f"aw_page:{prev_page}"),
+            InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="aw_noop"),
+            InlineKeyboardButton(text="|>>", callback_data=f"aw_page:{next_page}"),
+        )
+
+    return builder
+
+
+
+@router.callback_query(ArchiveFSM.choosing_week, F.data.startswith("aw_week:"))
+async def cb_aw_choose_week(call: CallbackQuery, state: FSMContext):
+    week_id = int(call.data.split(":")[1])
+    data = await state.get_data()
+    await add_archive_task(
+        week_id=week_id,
+        chat_id=data["arc_chat_id"],
+        message_ids=data["arc_message_ids"],
+        is_album=data["arc_is_album"],
+        title=data["arc_title"],
+    )
+    await state.clear()
+    await call.message.edit_text(ARCHIVE_SAVED_TEXT)
+    await call.answer()
+
+
+@router.callback_query(ArchiveFSM.choosing_week, F.data == "aw_new")
+async def cb_aw_new_week(call: CallbackQuery, state: FSMContext):
+    await state.set_state(ArchiveFSM.entering_week_name)
+    await call.message.edit_text(ARCHIVE_NEW_WEEK_PROMPT_TEXT)
+    await call.answer()
+
+
+@router.message(ArchiveFSM.entering_week_name, F.from_user.id.in_(ADMIN_IDS))
+async def cb_aw_enter_name(message: Message, state: FSMContext):
+    title = message.text.strip()
+    data = await state.get_data()
+    week_id = await create_week(title)
+    await add_archive_task(
+        week_id=week_id,
+        chat_id=data["arc_chat_id"],
+        message_ids=data["arc_message_ids"],
+        is_album=data["arc_is_album"],
+        title=data["arc_title"],
+    )
+    await state.clear()
+    await message.answer(ARCHIVE_SAVED_TEXT)
+
+
+@router.callback_query(ArchiveFSM.choosing_week, F.data == "aw_skip")
+async def cb_aw_skip(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text(ARCHIVE_SKIPPED_TEXT)
+    await call.answer()
+
+
+@router.callback_query(ArchiveFSM.choosing_week, F.data.startswith("aw_page:"))
+async def cb_aw_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":")[1])
+    weeks = await get_all_weeks()
+    kb = _choose_week_keyboard(weeks, page=page)
+    await call.message.edit_reply_markup(reply_markup=kb.as_markup())
+    await state.update_data(arc_page=page)
+    await call.answer()
+
+
+@router.callback_query(ArchiveFSM.choosing_week, F.data == "aw_noop")
+async def cb_aw_noop(call: CallbackQuery):
+    await call.answer()

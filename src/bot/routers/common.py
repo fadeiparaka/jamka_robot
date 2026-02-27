@@ -4,6 +4,7 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from db.users import add_user_from_message
 from db.tasks import get_last_task
@@ -19,11 +20,16 @@ _media_buffer: dict[str, list[Message]] = {}
 # Флаг запущенного таймера для группы
 _media_timers: set[str] = set()
 
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="Архив")]],
+    resize_keyboard=True,
+    input_field_placeholder="Отправь ответ на задание...",
+)
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await add_user_from_message(message)
-    await message.answer(texts.WELCOME_TEXT)
+    await message.answer(texts.WELCOME_TEXT, reply_markup=MAIN_KEYBOARD)
 
     last_task = await get_last_task()
     if last_task:
@@ -60,7 +66,11 @@ async def cmd_help(message: Message):
     await message.answer(texts.HELP_TEXT)
 
 
-@router.message(~F.text.startswith("/"), F.content_type == "text")
+@router.message(
+    ~F.text.startswith("/"),
+    F.text != texts.ARCHIVE_BUTTON_TEXT,
+    F.content_type == "text",
+)
 async def handle_task_answer(message: Message):
     if not message.reply_to_message:
         await message.answer(texts.NO_REPLY_TEXT)
@@ -137,6 +147,8 @@ async def handle_media_group(message: Message):
     messages.sort(key=lambda m: m.message_id)
     message_ids = [m.message_id for m in messages]
 
+    await message.bot.send_chat_action(message.chat.id, "typing")
+
     try:
         await message.bot.copy_messages(
             chat_id=TASKS_CHANNEL_ID,
@@ -185,6 +197,7 @@ async def handle_single_media(message: Message):
 
 
 async def _forward_and_tag(message: Message, task_title: str):
+    await message.bot.send_chat_action(message.chat.id, "typing")
     try:
         await message.bot.copy_message(
             chat_id=TASKS_CHANNEL_ID,
