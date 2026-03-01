@@ -65,3 +65,13 @@ ARCHIVE_CHOOSE_WEEK_TEXT = "К какой неделе привязать это
 ARCHIVE_NEW_WEEK_PROMPT_TEXT = "Введи название новой недели:"
 ARCHIVE_SAVED_TEXT = "Задание сохранено в архив."
 ARCHIVE_SKIPPED_TEXT = "Пропустил."
+
+# Статистика /people
+PEOPLE_LOADING_TEXT = "Считаю…"
+PEOPLE_TEXT = (
+    "👥 <b>Всего в боте:</b> {total}\n\n"
+    "<b>За день:</b> +{day_joined} / -{day_left}\n"
+    "<b>За неделю:</b> +{week_joined} / -{week_left}\n"
+    "<b>За месяц:</b> +{month_joined} / -{month_left}\n\n"
+    "<b>Последнее обновление:</b> {last_update}"
+)

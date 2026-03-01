@@ -9,15 +9,19 @@ import math
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
 
+from datetime import datetime, timezone, timedelta
 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from db.archive import get_all_weeks, create_week, add_archive_task
+from db.users import get_all_chat_ids, delete_user_by_chat_id, get_stats, get_last_update_time
 from bot.texts import (
     ARCHIVE_CHOOSE_WEEK_TEXT,
     ARCHIVE_NEW_WEEK_PROMPT_TEXT,
     ARCHIVE_SAVED_TEXT,
     ARCHIVE_SKIPPED_TEXT,
+    PEOPLE_TEXT,
+    PEOPLE_LOADING_TEXT,
 )
 
 from config import ADMIN_IDS
@@ -151,6 +155,10 @@ async def cmd_post(message: Message, state: FSMContext):
                 logger.warning("Failed to send to %s: %s", chat_id, e)
                 break
 
+    await loading_msg.delete()
+    await message.answer(
+        f"{POST_DONE_TEXT} Отправлено: {sent}. Удалено из БД: {removed}."
+    )
 
     if do_pin and sent > 0:
         await save_last_task(src_msg.chat.id, message_ids)
@@ -213,6 +221,38 @@ async def cmd_pin(message: Message):
 
 @router.message(Command("pin"))
 async def not_admin_pin(message: Message):
+    await message.answer(NOT_ADMIN_TEXT)
+
+@router.message(Command("people"), F.from_user.id.in_(ADMIN_IDS))
+async def cmd_people(message: Message):
+    loading_msg = await message.answer(PEOPLE_LOADING_TEXT)
+    stats = await get_stats()
+    last_update = await get_last_update_time()
+
+    if last_update:
+        # Форматируем "2026-03-01 10:32:00" → "01.03.2026 в 10:32"
+        dt = datetime.strptime(last_update, "%Y-%m-%d %H:%M:%S")
+        dt_moscow = dt.replace(tzinfo=timezone.utc) + timedelta(hours=3)
+        last_update_str = dt_moscow.strftime("%d.%m.%Y в %H:%M")
+    else:
+        last_update_str = "ещё не было"
+
+    text = PEOPLE_TEXT.format(
+        total=stats["total"],
+        day_joined=stats["day"]["joined"],
+        day_left=stats["day"]["left"],
+        week_joined=stats["week"]["joined"],
+        week_left=stats["week"]["left"],
+        month_joined=stats["month"]["joined"],
+        month_left=stats["month"]["left"],
+        last_update=last_update_str,
+    )
+    await loading_msg.delete()
+    await message.answer(text)
+
+
+@router.message(Command("people"))
+async def not_admin_people(message: Message):
     await message.answer(NOT_ADMIN_TEXT)
 
 def _choose_week_keyboard(weeks: list[dict], page: int) -> InlineKeyboardBuilder:
