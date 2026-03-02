@@ -16,13 +16,6 @@ async def init_users_table():
         )
         """
     )
-    await db.execute("PRAGMA table_info(users)")
-    # Миграция: добавить колонку если её нет (для уже существующей БД)
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0")
-        await db.commit()
-    except Exception:
-        pass  # Колонка уже есть
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS users_log (
@@ -34,6 +27,7 @@ async def init_users_table():
     )
     await db.commit()
     await db.close()
+
 
 
 async def add_user_from_message(message):
