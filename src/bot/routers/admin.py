@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from db.archive import get_all_weeks, create_week, add_archive_task
-from db.users import get_all_chat_ids, delete_user_by_chat_id, get_stats, get_last_update_time
+from db.users import get_all_chat_ids, delete_user_by_chat_id, get_stats, get_last_update_time, set_last_broadcast_time, ban_user, unban_user
 from bot.texts import (
     ARCHIVE_CHOOSE_WEEK_TEXT,
     ARCHIVE_NEW_WEEK_PROMPT_TEXT,
@@ -22,6 +22,17 @@ from bot.texts import (
     ARCHIVE_SKIPPED_TEXT,
     PEOPLE_TEXT,
     PEOPLE_LOADING_TEXT,
+    BROADCAST_STAGE_0,
+    BROADCAST_STAGE_25,
+    BROADCAST_STAGE_50,
+    BROADCAST_STAGE_75,
+    BROADCAST_DONE_TEXT,
+    BAN_USAGE_TEXT,
+    UNBAN_USAGE_TEXT,
+    BAN_SUCCESS_TEXT,
+    UNBAN_SUCCESS_TEXT,
+    BAN_NOT_FOUND_TEXT,
+    UNBAN_NOT_FOUND_TEXT,
 )
 
 from config import ADMIN_IDS
@@ -44,6 +55,12 @@ class ArchiveFSM(StatesGroup):
 
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
+
+async def keep_typing(bot, chat_id: int, stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        await bot.send_chat_action(chat_id, "typing")
+        await asyncio.sleep(4)
+
 
 # Буфер последнего альбома от админа: media_group_id -> [message_id, ...]
 _admin_album_buffer: dict[str, list[Message]] = {}
@@ -73,10 +90,8 @@ async def cmd_post(message: Message, state: FSMContext):
     src_msg = message.reply_to_message
     loading_msg = await message.answer(POST_STARTED_TEXT)
 
-    # Определяем: одиночное сообщение или альбом
     group_id = src_msg.media_group_id
     if group_id:
-        # Ждём пока все части альбома придут от Telegram
         await asyncio.sleep(0.7)
 
     if group_id and group_id in _admin_album_buffer:
@@ -93,12 +108,23 @@ async def cmd_post(message: Message, state: FSMContext):
         message_ids = [src_msg.message_id]
         is_album = False
 
-
     chat_ids = await get_all_chat_ids()
-    logger.info("Broadcast to %s chats, album=%s, pin=%s", len(chat_ids), is_album, do_pin)
+    total = len(chat_ids)
+    logger.info("Broadcast to %s chats, album=%s, pin=%s", total, is_album, do_pin)
 
     sent = 0
     removed = 0
+    last_stage = -1
+
+    BROADCAST_STAGES = [
+        (0,  BROADCAST_STAGE_0),
+        (25, BROADCAST_STAGE_25),
+        (50, BROADCAST_STAGE_50),
+        (75, BROADCAST_STAGE_75),
+    ]
+
+    stop_typing = asyncio.Event()
+    asyncio.create_task(keep_typing(message.bot, message.chat.id, stop_typing))
 
     for chat_id in chat_ids:
         retries = 3
@@ -131,13 +157,30 @@ async def cmd_post(message: Message, state: FSMContext):
                     except Exception as pin_err:
                         logger.warning("Pin failed for chat_id=%s: %s", chat_id, pin_err)
 
+                percent = int(sent / total * 100) if total > 0 else 100
+                for threshold, text in reversed(BROADCAST_STAGES):
+                    if percent >= threshold and threshold > last_stage:
+                        try:
+                            await loading_msg.edit_text(text, parse_mode="HTML")
+                        except Exception:
+                            pass
+                        last_stage = threshold
+                        break
+
                 await asyncio.sleep(0.05)
-                break  # успешно — выходим из while
+                break
 
             except TelegramRetryAfter as e:
                 logger.warning("Rate limit, sleeping %s sec", e.retry_after)
+                try:
+                    await loading_msg.edit_text(
+                        f"⏳ Пауза {e.retry_after} сек (лимит Telegram)...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
                 await asyncio.sleep(e.retry_after)
-                retries -= 1  # попробуем ещё раз
+                retries -= 1
 
             except TelegramForbiddenError:
                 await delete_user_by_chat_id(chat_id)
@@ -155,25 +198,26 @@ async def cmd_post(message: Message, state: FSMContext):
                 logger.warning("Failed to send to %s: %s", chat_id, e)
                 break
 
-    await loading_msg.delete()
-    await message.answer(
-        f"{POST_DONE_TEXT} Отправлено: {sent}. Удалено из БД: {removed}."
+    stop_typing.set()
+    await set_last_broadcast_time() 
+
+
+    await loading_msg.edit_text(
+        BROADCAST_DONE_TEXT.format(sent=sent, total=total, removed=removed),
+        parse_mode="HTML"
     )
 
     if do_pin and sent > 0:
         await save_last_task(src_msg.chat.id, message_ids)
         logger.info("Saved last task: chat_id=%s msg_ids=%s", src_msg.chat.id, message_ids)
 
-        # Извлекаем заголовок задания
         raw_text = src_msg.text or src_msg.caption or album_caption or ""
         title = (raw_text.split(".", 1)[0].strip() + ".") if raw_text else "Без названия."
-
 
         weeks = await get_all_weeks()
         kb = _choose_week_keyboard(weeks, page=0)
         await message.answer(ARCHIVE_CHOOSE_WEEK_TEXT, reply_markup=kb.as_markup())
 
-        # Сохраняем данные задания в FSM
         await state.set_state(ArchiveFSM.choosing_week)
         await state.update_data(
             arc_chat_id=src_msg.chat.id,
@@ -182,6 +226,7 @@ async def cmd_post(message: Message, state: FSMContext):
             arc_title=title,
             arc_page=0,
         )
+
 
 
 
@@ -254,6 +299,44 @@ async def cmd_people(message: Message):
 @router.message(Command("people"))
 async def not_admin_people(message: Message):
     await message.answer(NOT_ADMIN_TEXT)
+
+@router.message(Command("ban"), F.from_user.id.in_(ADMIN_IDS))
+async def cmd_ban(message: Message):
+    args = message.text.split()[1:]
+    if not args or not args[0].isdigit():
+        await message.answer(BAN_USAGE_TEXT)
+        return
+    user_id = int(args[0])
+    success = await ban_user(user_id)
+    if success:
+        await message.answer(BAN_SUCCESS_TEXT.format(user_id=user_id))
+    else:
+        await message.answer(BAN_NOT_FOUND_TEXT.format(user_id=user_id))
+
+
+@router.message(Command("ban"))
+async def not_admin_ban(message: Message):
+    await message.answer(NOT_ADMIN_TEXT)
+
+
+@router.message(Command("unban"), F.from_user.id.in_(ADMIN_IDS))
+async def cmd_unban(message: Message):
+    args = message.text.split()[1:]
+    if not args or not args[0].isdigit():
+        await message.answer(UNBAN_USAGE_TEXT)
+        return
+    user_id = int(args[0])
+    success = await unban_user(user_id)
+    if success:
+        await message.answer(UNBAN_SUCCESS_TEXT.format(user_id=user_id))
+    else:
+        await message.answer(UNBAN_NOT_FOUND_TEXT.format(user_id=user_id))
+
+
+@router.message(Command("unban"))
+async def not_admin_unban(message: Message):
+    await message.answer(NOT_ADMIN_TEXT)
+
 
 def _choose_week_keyboard(weeks: list[dict], page: int) -> InlineKeyboardBuilder:
     WEEKS_PER_PAGE = 8

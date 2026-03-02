@@ -6,10 +6,11 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from db.users import add_user_from_message
+from db.users import add_user_from_message, is_user_banned
 from db.tasks import get_last_task
 from bot import texts
 from config import TASKS_CHANNEL_ID
+from bot.texts import BANNED_REPLY_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,6 @@ async def handle_task_answer(message: Message):
 @router.message(F.media_group_id, ~F.text.startswith("/"))
 async def handle_media_group(message: Message):
     if not message.reply_to_message:
-        # Одиночное медиа без reply — не альбом в контексте задания
         if not message.media_group_id:
             await message.answer(texts.NO_REPLY_TEXT)
         return
@@ -123,14 +123,17 @@ async def handle_media_group(message: Message):
         await message.answer(texts.CHANNEL_NOT_CONFIGURED_TEXT)
         return
 
+    # Проверка бана — здесь, до буфера
+    if await is_user_banned(message.from_user.id):
+        await message.answer(BANNED_REPLY_TEXT)
+        return
+
     group_id = message.media_group_id
 
-    # Добавляем сообщение в буфер
     if group_id not in _media_buffer:
         _media_buffer[group_id] = []
     _media_buffer[group_id].append(message)
 
-    # Запускаем таймер только один раз на группу
     if group_id in _media_timers:
         return
     _media_timers.add(group_id)
@@ -143,7 +146,6 @@ async def handle_media_group(message: Message):
     if not messages:
         return
 
-    # Сортируем по message_id чтобы порядок был правильный
     messages.sort(key=lambda m: m.message_id)
     message_ids = [m.message_id for m in messages]
 
@@ -167,6 +169,7 @@ async def handle_media_group(message: Message):
     )
 
     await messages[0].answer(texts.TASK_ACCEPTED_TEXT)
+
 
 
 @router.message(~F.media_group_id, ~F.text.startswith("/"), F.content_type.in_({"photo", "video", "document", "audio", "voice", "video_note"}))
@@ -197,6 +200,9 @@ async def handle_single_media(message: Message):
 
 
 async def _forward_and_tag(message: Message, task_title: str):
+    if await is_user_banned(message.from_user.id):
+        await message.answer(BANNED_REPLY_TEXT)
+        return
     await message.bot.send_chat_action(message.chat.id, "typing")
     try:
         await message.bot.copy_message(
@@ -218,12 +224,14 @@ async def _forward_and_tag(message: Message, task_title: str):
 
 
 def _get_author_tag(message: Message) -> str:
-    if message.from_user.username:
-        return f"@{message.from_user.username}"
+    user = message.from_user
+    if user.username:
+        return f"@{user.username} (id: {user.id})"
     full_name = " ".join(
-        filter(None, [message.from_user.first_name, message.from_user.last_name])
-    ) or "Без имени"
-    return f"{full_name} (id: {message.from_user.id})"
+        filter(None, [user.first_name, user.last_name])
+    ) or "безымени"
+    return f"{full_name} (id: {user.id})"
+
 
 
 def extract_task_title(text: str) -> str | None:

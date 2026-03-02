@@ -10,11 +10,19 @@ async def init_users_table():
             user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
             username TEXT,
+            is_banned INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, chat_id)
         )
         """
     )
+    await db.execute("PRAGMA table_info(users)")
+    # Миграция: добавить колонку если её нет (для уже существующей БД)
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0")
+        await db.commit()
+    except Exception:
+        pass  # Колонка уже есть
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS users_log (
@@ -101,11 +109,65 @@ async def get_stats() -> dict:
     await db.close()
     return result
 
+async def set_last_broadcast_time():
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcasts_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute("INSERT INTO broadcasts_log DEFAULT VALUES")
+    await db.commit()
+    await db.close()
+
+
 async def get_last_update_time() -> str | None:
     db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcasts_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     cursor = await db.execute(
-        "SELECT created_at FROM users_log WHERE event='left' ORDER BY created_at DESC LIMIT 1"
+        "SELECT created_at FROM broadcasts_log ORDER BY created_at DESC LIMIT 1"
     )
     row = await cursor.fetchone()
     await db.close()
     return row[0] if row else None
+
+async def ban_user(user_id: int) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,)
+    )
+    updated = cursor.rowcount
+    await db.commit()
+    await db.close()
+    return updated > 0
+
+
+async def unban_user(user_id: int) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,)
+    )
+    updated = cursor.rowcount
+    await db.commit()
+    await db.close()
+    return updated > 0
+
+
+async def is_user_banned(user_id: int) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT is_banned FROM users WHERE user_id = ?", (user_id,)
+    )
+    row = await cursor.fetchone()
+    await db.close()
+    return bool(row and row[0])

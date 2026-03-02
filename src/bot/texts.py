@@ -24,6 +24,16 @@ POST_STARTED_TEXT = "Думаю… Начинаю рассылку сообще�
 POST_DONE_TEXT = "Готово. Рассылка завершена."
 POST_ERROR_TEXT = "Произошла ошибка при рассылке."
 
+BROADCAST_STAGE_0  = "🔴 Начинаю рассылку..."
+BROADCAST_STAGE_25 = "🟠 25% готово..."
+BROADCAST_STAGE_50 = "🟡 Половина готова..."
+BROADCAST_STAGE_75 = "🟢 Почти всё..."
+BROADCAST_DONE_TEXT = (
+    "⚪ Рассылка завершена!\n"
+    "Отправлено: {sent} / {total}\n"
+    "Удалено из БД: {removed}"
+)
+
 # Доступ
 NOT_ADMIN_TEXT = "У тебя нет прав на выполнение этой команды."
 
@@ -75,3 +85,11 @@ PEOPLE_TEXT = (
     "<b>За месяц:</b> +{month_joined} / -{month_left}\n\n"
     "<b>Последнее обновление:</b> {last_update}"
 )
+# Бан
+BAN_USAGE_TEXT = "Использование: /ban USER_ID"
+UNBAN_USAGE_TEXT = "Использование: /unban USER_ID"
+BAN_SUCCESS_TEXT = "✅ Пользователь {user_id} ЗАБАНЕН."
+UNBAN_SUCCESS_TEXT = "✅ Пользователь {user_id} разблокирован."
+BAN_NOT_FOUND_TEXT = "❌ Пользователь с ID {user_id} не найден в базе."
+UNBAN_NOT_FOUND_TEXT = "❌ Пользователь с ID {user_id} не найден или не был заблокирован."
+BANNED_REPLY_TEXT = "Лох, ты заблокирован. Ты не можешь отправлять ответы."
