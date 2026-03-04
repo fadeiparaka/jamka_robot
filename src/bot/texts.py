@@ -93,3 +93,8 @@ UNBAN_SUCCESS_TEXT = "✅ Пользователь {user_id} разблокир�
 BAN_NOT_FOUND_TEXT = "❌ Пользователь с ID {user_id} не найден в базе."
 UNBAN_NOT_FOUND_TEXT = "❌ Пользователь с ID {user_id} не найден или не был заблокирован."
 BANNED_REPLY_TEXT = "Лох, ты заблокирован. Ты не можешь отправлять ответы."
+
+# Личное сообщение /dm
+DM_USAGE_TEXT = "Использование: /dm USER_ID текст сообщения"
+DM_SUCCESS_TEXT = "✅ Отправил {user_id}."
+DM_FAILED_TEXT = "❌ Не удалось отправить: пользователь {user_id} заблокировал бота или не существует."

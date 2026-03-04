@@ -33,6 +33,9 @@ from bot.texts import (
     UNBAN_SUCCESS_TEXT,
     BAN_NOT_FOUND_TEXT,
     UNBAN_NOT_FOUND_TEXT,
+    DM_USAGE_TEXT,
+    DM_SUCCESS_TEXT,
+    DM_FAILED_TEXT,
 )
 
 from config import ADMIN_IDS
@@ -367,6 +370,26 @@ def _choose_week_keyboard(weeks: list[dict], page: int) -> InlineKeyboardBuilder
 
     return builder
 
+@router.message(Command("dm"), F.from_user.id.in_(ADMIN_IDS))
+async def cmd_dm(message: Message):
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3 or not args[1].lstrip("-").isdigit():
+        await message.answer(DM_USAGE_TEXT)
+        return
+
+    user_id = int(args[1])
+    text = args[2]
+
+    try:
+        await message.bot.send_message(chat_id=user_id, text=text)
+        await message.answer(DM_SUCCESS_TEXT.format(user_id=user_id))
+    except Exception:
+        await message.answer(DM_FAILED_TEXT.format(user_id=user_id))
+
+
+@router.message(Command("dm"))
+async def not_admin_dm(message: Message):
+    await message.answer(NOT_ADMIN_TEXT)
 
 
 @router.callback_query(ArchiveFSM.choosing_week, F.data.startswith("aw_week:"))

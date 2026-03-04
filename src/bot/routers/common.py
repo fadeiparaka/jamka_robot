@@ -156,6 +156,7 @@ async def handle_media_group(message: Message):
             chat_id=TASKS_CHANNEL_ID,
             from_chat_id=message.chat.id,
             message_ids=message_ids,
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.exception("Не удалось переслать альбом в канал: %s", e)
@@ -219,6 +220,7 @@ async def _forward_and_tag(message: Message, task_title: str):
     await message.bot.send_message(
         chat_id=TASKS_CHANNEL_ID,
         text=f"{task_title}\n\n{author_tag}",
+        parse_mode="HTML",
     )
     await message.answer(texts.TASK_ACCEPTED_TEXT)
 
@@ -226,11 +228,12 @@ async def _forward_and_tag(message: Message, task_title: str):
 def _get_author_tag(message: Message) -> str:
     user = message.from_user
     if user.username:
-        return f"@{user.username} (id: {user.id})"
+        return f"@{user.username} (id: <code>{user.id}</code>)"
     full_name = " ".join(
         filter(None, [user.first_name, user.last_name])
     ) or "безымени"
-    return f"{full_name} (id: {user.id})"
+    return f"{full_name} (id: <code>{user.id}</code>)"
+
 
 
 
