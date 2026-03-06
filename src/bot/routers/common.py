@@ -156,7 +156,6 @@ async def handle_media_group(message: Message):
             chat_id=TASKS_CHANNEL_ID,
             from_chat_id=message.chat.id,
             message_ids=message_ids,
-            parse_mode="HTML",
         )
     except Exception as e:
         logger.exception("Не удалось переслать альбом в канал: %s", e)
