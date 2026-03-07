@@ -24,7 +24,7 @@ _media_timers: set[str] = set()
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Архив")]],
     resize_keyboard=True,
-    input_field_placeholder="Отправь ответ на задание...",
+    input_field_placeholder="Сделай это...",
 )
 
 @router.message(Command("start"))
