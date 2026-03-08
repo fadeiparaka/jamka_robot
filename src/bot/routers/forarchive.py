@@ -51,7 +51,7 @@ def _weeks_keyboard(weeks: list[dict], page: int) -> InlineKeyboardBuilder:
 
 def _tasks_keyboard(tasks: list[dict], week_id: int) -> InlineKeyboardBuilder:
     builder = InlineKeyboardBuilder()
-    for i, task in enumerate(tasks[:TASKS_PER_PAGE]):
+    for i, task in enumerate(tasks):
         builder.button(
             text=task["title"],
             callback_data=f"arc_task:{task['id']}",
