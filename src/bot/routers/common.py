@@ -24,8 +24,10 @@ _media_timers: set[str] = set()
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Архив")]],
     resize_keyboard=True,
+    is_persistent=True,
     input_field_placeholder="Сделай это бля",
 )
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
