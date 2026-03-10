@@ -28,7 +28,6 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     input_field_placeholder="Сделай это бля",
 )
 
-
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await add_user_from_message(message)
