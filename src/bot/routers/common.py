@@ -164,11 +164,15 @@ async def handle_media_group(message: Message):
         return
 
     author_tag = _get_author_tag(message)
+    src_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    task_body = extract_task_body(src_text)
+    body_block = f"\n<blockquote expandable>{task_body}</blockquote>\n\n" if task_body else "\n\n"
+
     await message.bot.send_message(
         chat_id=TASKS_CHANNEL_ID,
-        text=f"{task_title}\n\n{author_tag}",
+        text=f"{task_title}.\n{body_block}{author_tag}",
+        parse_mode="HTML",
     )
-
     await messages[0].answer(texts.TASK_ACCEPTED_TEXT)
 
 
@@ -217,9 +221,13 @@ async def _forward_and_tag(message: Message, task_title: str):
         return
 
     author_tag = _get_author_tag(message)
+    src_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    task_body = extract_task_body(src_text)
+    body_block = f"\n<blockquote expandable>{task_body}</blockquote>\n\n" if task_body else "\n\n"
+
     await message.bot.send_message(
         chat_id=TASKS_CHANNEL_ID,
-        text=f"{task_title}\n\n{author_tag}",
+        text=f"{task_title}.\n{body_block}{author_tag}",
         parse_mode="HTML",
     )
     await message.answer(texts.TASK_ACCEPTED_TEXT)
@@ -243,3 +251,12 @@ def extract_task_title(text: str) -> str | None:
     parts = text.split(".", 1)
     title = parts[0].strip()
     return title or None
+
+def extract_task_body(text: str) -> str:
+    """Всё после первой точки, без leading пробелов."""
+    if not text:
+        return ""
+    parts = text.split(".", 1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
